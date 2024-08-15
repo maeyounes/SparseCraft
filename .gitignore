@@ -1,0 +1,5 @@
+sparsecraft_data
+__pycache__
+exp_dir/
+runs_dir/
+dtu_gt

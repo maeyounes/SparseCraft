@@ -1,0 +1,14 @@
+pytorch-lightning<2
+omegaconf==2.2.3
+nerfacc==0.3.3
+opencv-python
+imageio
+imageio-ffmpeg
+pymcubes==0.1.4
+scipy
+tensorboard
+scikit-image==0.19.0
+lpips==0.1.4
+plyfile
+trimesh
+open3d
