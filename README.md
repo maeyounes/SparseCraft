@@ -77,7 +77,9 @@ conda deactivate && conda activate sparsecraft
 
 Remember to replace the path and the CUDA version with your own.
 
-**Note** that the first time you run the code, it will take some time to compile the CUDA kernels.
+**Note**
+
+The first time you run the code, it will take some time to compile the CUDA kernels.
 
 
 
@@ -189,7 +191,6 @@ The script computes the F-score, completeness, and accuracy metrics based on Cha
 The results are saved in the `exp_dir/[name]/[tag]@[timestamp]/save` directory.
 
 **Reproducibility Note**
-
 
 Please note that results can be slightly different across different runs due to the randomness in the training process. 
 
