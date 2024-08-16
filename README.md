@@ -213,7 +213,7 @@ python launch.py --config configs/novel-view-synthesis/dtu-sparse-3v.yaml --gpu 
 The training procedure is followed by testing, which computes metrics on the provided test data, and exports the geometry as triangular meshes.
 
 ### Testing
-If you want to do only testing, just resume the pretrained model and replace `--train` with `--test`, for example:
+If you want to do only testing, given that you have a trained model, you can use the following command:
 ```bash
 python launch.py --config path/to/your/exp/config/parsed.yaml --train --resume path/to/your/exp/ckpt/epoch=0-step=20000.ckpt --gpu 0
 ```
