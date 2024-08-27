@@ -12,3 +12,4 @@ lpips==0.1.4
 plyfile
 trimesh
 open3d
+pyransac3d
