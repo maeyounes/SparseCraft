@@ -299,11 +299,10 @@ class NeuSModel(BaseModel):
         positions = torch.cat([positions, space_points])
 
         if self.config.geometry.grad_type == "finite_difference":
-            sdf, sdf_grad_all, feature, sdf_laplace = self.geometry(
+            sdf, sdf_grad_all, feature = self.geometry(
                 positions,
                 with_grad=True,
                 with_feature=True,
-                with_laplace=True,
             )
         else:
             sdf, sdf_grad_all, feature = self.geometry(
@@ -356,8 +355,6 @@ class NeuSModel(BaseModel):
                     "ray_indices": ray_indices.view(-1),
                 }
             )
-            if self.config.geometry.grad_type == "finite_difference":
-                out.update({"sdf_laplace_samples": sdf_laplace})
 
         if self.config.learned_background:
             out_bg = self.forward_bg_(rays)

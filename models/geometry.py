@@ -4,6 +4,7 @@ import torch.nn as nn
 
 from pytorch_lightning.utilities.rank_zero import rank_zero_info
 
+import math
 import models
 from models.base import BaseModel
 from models.utils import scale_anything, get_activation, cleanup, chunk_batch
@@ -210,94 +211,53 @@ class VolumeSDF(BaseImplicitGeometry):
                 f"Using finite difference to compute gradients with eps={self.finite_difference_eps}"
             )
 
-    def forward(
-        self,
-        points,
-        with_grad=True,
-        with_feature=True,
-        with_laplace=False,
-        with_encoding=False,
-    ):
-        with torch.inference_mode(
-            torch.is_inference_mode_enabled()
-            and not (with_grad)
-        ):
-            with torch.set_grad_enabled(
-                self.training or (with_grad)
-            ):
-                points_ = points  # points in the original scale
-                points = contract_to_unisphere(
-                    points, self.radius, self.contraction_type
-                )  # points normalized to (0, 1)
+    def forward(self, points, with_grad=True, with_feature=True):
+        with torch.inference_mode(torch.is_inference_mode_enabled() and not (with_grad and self.grad_type == 'analytic')):
+            with torch.set_grad_enabled(self.training or (with_grad and self.grad_type == 'analytic')):
+                if with_grad and self.grad_type == 'analytic':
+                    if not self.training:
+                        points = points.clone() # points may be in inference mode, get a copy to enable grad
+                    points.requires_grad_(True)
+
+                points_ = points # points in the original scale
+                points = contract_to_unisphere(points, self.radius, self.contraction_type) # points normalized to (0, 1)
                 
+                out = self.network(self.encoding(points.view(-1, 3))).view(*points.shape[:-1], self.n_output_dims).float()
+                sdf, feature = out[...,0], out
+                feature = torch.concat([feature, (points * 2 - 1)], dim=-1)
+                if 'sdf_activation' in self.config:
+                    sdf = get_activation(self.config.sdf_activation)(sdf + float(self.config.sdf_bias))
+                if 'feature_activation' in self.config:
+                    feature = get_activation(self.config.feature_activation)(feature)
                 if with_grad:
-                    # Compute numerical diff samples
-                    eps = self._finite_difference_eps
-                    offsets = torch.as_tensor(
-                        [
-                            [eps, 0.0, 0.0],
-                            [-eps, 0.0, 0.0],
-                            [0.0, eps, 0.0],
-                            [0.0, -eps, 0.0],
-                            [0.0, 0.0, eps],
-                            [0.0, 0.0, -eps],
-                        ]
-                    ).to(points_)
-                    points_d_ = (points_[..., None, :] + offsets).clamp(
-                        -self.radius, self.radius
-                    )
-                    points_d = scale_anything(
-                        points_d_, (-self.radius, self.radius), (0, 1)
-                    )
-                    # Concatenate input points with numerical diff samples
-                    pts_num = points.shape[0]
-                    pts_d_num = points_d.shape[0]
-                    all_pts = torch.cat([points.view(-1, 3), points_d.view(-1, 3)], dim=0)
-                    all_pts_encoding = self.encoding(all_pts)
-                    all_pts_output = (
-                    self.network(all_pts_encoding).view(*all_pts_encoding.shape[:-1], self.n_output_dims).float())
-                    all_pts_sdf, all_pts_feature = all_pts_output[..., 0], all_pts_output
-                    if "sdf_activation" in self.config:
-                        all_pts_sdf = get_activation(self.config.sdf_activation)(
-                            all_pts_sdf + float(self.config.sdf_bias)
-                        )
-                    if "feature_activation" in self.config:
-                        all_pts_feature = get_activation(self.config.feature_activation)(all_pts_feature)
-                    sdf, feature, encoding, points_d_sdf = all_pts_sdf[:pts_num], all_pts_feature[:pts_num], all_pts_encoding[:pts_num], all_pts_sdf[pts_num:].view(*points.shape[:-1], 6).float()
-                    grad = (
-                        0.5
-                        * (points_d_sdf[..., 0::2] - points_d_sdf[..., 1::2])
-                        / eps
-                    )
-                    if with_laplace:
-                        laplace = (
-                            points_d_sdf[..., 0::2]
-                            + points_d_sdf[..., 1::2]
-                            - 2 * sdf[..., None]
-                        ).sum(-1) / (eps**2)
-                else:
-                    encoding = self.encoding(points.view(-1, 3))
-                    out = (
-                        self.network(encoding)
-                        .view(*points.shape[:-1], self.n_output_dims)
-                        .float()
-                    )
-                    sdf, feature = out[..., 0], out
-                    if "sdf_activation" in self.config:
-                        sdf = get_activation(self.config.sdf_activation)(
-                            sdf + float(self.config.sdf_bias)
-                        )
-                    if "feature_activation" in self.config:
-                        feature = get_activation(self.config.feature_activation)(feature)
+                    if self.grad_type == 'analytic':
+                        grad = torch.autograd.grad(
+                            sdf, points_, grad_outputs=torch.ones_like(sdf),
+                            create_graph=True, retain_graph=True, only_inputs=True
+                        )[0]
+                    elif self.grad_type == 'finite_difference':
+                        eps = self._finite_difference_eps
+                        offsets = torch.as_tensor(
+                            [
+                                [eps, 0.0, 0.0],
+                                [-eps, 0.0, 0.0],
+                                [0.0, eps, 0.0],
+                                [0.0, -eps, 0.0],
+                                [0.0, 0.0, eps],
+                                [0.0, 0.0, -eps],
+                            ]
+                        ).to(points_)
+                        points_d_ = (points_[...,None,:] + offsets).clamp(-self.radius, self.radius)
+                        points_d = scale_anything(points_d_, (-self.radius, self.radius), (0, 1))
+                        points_d_sdf = self.network(self.encoding(points_d.view(-1, 3)))[...,0].view(*points.shape[:-1], 6).float()
+                        grad = 0.5 * (points_d_sdf[..., 0::2] - points_d_sdf[..., 1::2]) / eps  
+                
+
         rv = [sdf]
         if with_grad:
             rv.append(grad)
         if with_feature:
             rv.append(feature)
-        if with_laplace:
-            rv.append(laplace)
-        if with_encoding:
-            rv.append(encoding)
         rv = [v if self.training else v.detach() for v in rv]
         return rv[0] if len(rv) == 1 else rv
 

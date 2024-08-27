@@ -95,9 +95,13 @@ class SparseCraftModel(NeuSModel):
             sdf = self.geometry(x, with_grad=False, with_feature=False)
             inv_s = self.variance(torch.zeros([1, 3]))[:, :1].clip(1e-6, 1e6)
             inv_s = inv_s.expand(sdf.shape[0], 1)
-            cdf = torch.sigmoid(torch.unsqueeze(sdf, -1) * inv_s)
-            e = inv_s * (1 - cdf) * self.render_step_size
-            alpha = (1 - torch.exp(-e)).view(-1).clip(0.0, 1.0)
+            estimated_next_sdf = sdf[...,None] - self.render_step_size * 0.5
+            estimated_prev_sdf = sdf[...,None] + self.render_step_size * 0.5
+            prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_s)
+            next_cdf = torch.sigmoid(estimated_next_sdf * inv_s)
+            p = prev_cdf - next_cdf
+            c = prev_cdf
+            alpha = ((p + 1e-5) / (c + 1e-5)).view(-1, 1).clip(0.0, 1.0)
             return alpha
 
         def occ_eval_fn_bg(x):
@@ -126,22 +130,22 @@ class SparseCraftModel(NeuSModel):
         true_cos = (dirs * normal).sum(-1, keepdim=True)
         # "cos_anneal_ratio" grows from 0 to 1 in the beginning training iterations. The anneal strategy below makes
         # the cos value "not dead" at the beginning training iterations, for better convergence.
-        iter_cos = -(
-            F.relu(-true_cos * 0.5 + 0.5) * (1.0 - self.cos_anneal_ratio)
-            + F.relu(-true_cos) * self.cos_anneal_ratio
-        )  # always non-positive
-        cdf = torch.sigmoid(torch.unsqueeze(sdf, -1) * inv_s)
-        e = inv_s * (1 - cdf) * (-iter_cos) * self.render_step_size
-        alpha = (1 - torch.exp(-e)).view(-1).clip(0.0, 1.0)
-        return alpha, inv_s
+        iter_cos = -(F.relu(-true_cos * 0.5 + 0.5) * (1.0 - self.cos_anneal_ratio) +
+                     F.relu(-true_cos) * self.cos_anneal_ratio)  # always non-positive
 
-    def forward(self, rays, query_points=None, input_points=None):
-        if self.training:
-            out = self.forward_(rays)
-        else:
-            out = chunk_batch(self.forward_, self.config.ray_chunk, True, rays)
-        return {**out, "inv_s": self.variance.inv_s}
-        # return {**out}
+        # Estimate signed distances at section points
+        estimated_next_sdf = sdf[...,None] + iter_cos * dists.reshape(-1, 1) * 0.5
+        estimated_prev_sdf = sdf[...,None] - iter_cos * dists.reshape(-1, 1) * 0.5
+
+        prev_cdf = torch.sigmoid(estimated_prev_sdf * inv_s)
+        next_cdf = torch.sigmoid(estimated_next_sdf * inv_s)
+
+        p = prev_cdf - next_cdf
+        c = prev_cdf
+
+        alpha = ((p + 1e-5) / (c + 1e-5)).view(-1).clip(0.0, 1.0)
+        return alpha
+
 
     def forward_(self, rays):
         n_rays = rays.shape[0]
@@ -178,33 +182,28 @@ class SparseCraftModel(NeuSModel):
         )
         positions = torch.cat([positions, space_points])
         if self.config.geometry.grad_type == "finite_difference":
-            sdf, sdf_grad_all, feature_all, sdf_laplace, encoding_all = self.geometry(
+            sdf, sdf_grad_all, feature_all = self.geometry(
                 positions,
                 with_grad=True,
                 with_feature=True,
-                with_laplace=True,
-                with_encoding=True,
             )
-            sdf_laplace = sdf_laplace[:-random_pts_nb]
         else:
-            sdf, sdf_grad_all, feature_all, encoding_all = self.geometry(
+            sdf, sdf_grad_all, feature_all = self.geometry(
                 positions,
                 with_grad=True,
                 with_feature=True,
-                with_encoding=True,
             )
-        sdf, feature, sdf_grad, positions, encoding = (
+        sdf, feature, sdf_grad, positions = (
             sdf[:-random_pts_nb],
             feature_all[:-random_pts_nb],
             sdf_grad_all[:-random_pts_nb],
             positions[:-random_pts_nb],
-            encoding_all[:-random_pts_nb],
         )
         normal = F.normalize(sdf_grad, p=2, dim=-1)
-        alphas, inv_s = self.get_alpha(sdf, normal, t_dirs, dists)
+        alphas = self.get_alpha(sdf, normal, t_dirs, dists)
         alpha = alphas[..., None]
-        albedo_color = self.texture.output_albedo(encoding, feature)
-        specular_color = self.texture.output_specular(encoding, feature, t_dirs, normal)
+        albedo_color = self.texture.output_albedo(feature)
+        specular_color = self.texture.output_specular(feature, t_dirs, normal)
         rgb = albedo_color + specular_color
         rgb = get_activation(self.texture.config.color_activation)(rgb)
         weights = render_weight_from_alpha(
@@ -239,21 +238,14 @@ class SparseCraftModel(NeuSModel):
                 {
                     "sdf_samples": sdf,
                     "specular_color": specular_color,
-                    "sdf_grad_samples": sdf_grad_all,
+                    "sdf_grad_samples": sdf_grad,
                     "weights": weights.view(-1),
                     "alpha": alpha.view(-1),
                     "points": midpoints.view(-1),
                     "intervals": dists.view(-1),
                     "ray_indices": ray_indices.view(-1),
-                    "inv_s": inv_s.mean(),
                 }
             )
-            if self.config.geometry.grad_type == "finite_difference":
-                out.update(
-                    {
-                        "sdf_laplace_samples": sdf_laplace,
-                    }
-                )
         else:
             comp_normal = accumulate_along_rays(weights, ray_indices, values=normal, n_rays=n_rays)
             comp_normal = F.normalize(comp_normal, p=2, dim=-1)
@@ -288,4 +280,14 @@ class SparseCraftModel(NeuSModel):
             **out,
             **{k + "_bg": v for k, v in out_bg.items()},
             **{k + "_full": v for k, v in out_full.items()},
+        }
+
+    def forward(self, rays):
+        if self.training:
+            out = self.forward_(rays)
+        else:
+            out = chunk_batch(self.forward_, self.config.ray_chunk, True, rays)
+        return {
+            **out,
+            'inv_s': self.variance.inv_s
         }
