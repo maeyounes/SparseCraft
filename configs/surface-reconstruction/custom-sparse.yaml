@@ -1,26 +1,26 @@
-name: novelviewsynthesis-9v-${basename:${dataset.root_dir}}
+name: reconstruction-custom-${basename:${dataset.root_dir}}
 tag: ""
 seed: 42
 
 dataset:
-  name: dtu
-  root_dir: ./sparsecraft_data/nvs/mvs_data/scan55
-  cameras_file: cameras.npz
-  img_downscale: 4 # specify training image size by either img_wh or img_downscale
+  name: colmap
+  root_dir: custom_scene/all_views/dense # path_to_custom_dataset
+  img_downscale: 1 # specify training image size by either img_wh or img_downscale
+  up_est_method: ground # if true, use estimated ground plane normal direction as up direction
+  center_est_method: lookat
   apply_mask: false
-  task: sparse_novel_view_synthesis
-  views_n: 9
-  pcl_file: dense_9v/fused_9v.ply
+  load_data_on_gpu: false
+  pcl_file: fused.ply
   radius: ${model.radius}
 
 model:
   name: sparsecraft
-  radius: 1.0
+  radius: 2.0
   near_plane_bg: 0.1
-  far_plane_bg: 10
-  num_samples_per_ray: 1024
+  far_plane_bg: 1000
+  num_samples_per_ray: 512
   train_num_rays: 256
-  max_train_num_rays: 1024
+  max_train_num_rays: 2048
   grid_prune: true
   grid_prune_occ_thre: 0.001
   dynamic_ray_sampling: true
@@ -36,7 +36,7 @@ model:
   geometry:
     name: volume-sdf
     radius: ${model.radius}
-    feature_dim: 13
+    feature_dim: 65
     grad_type: finite_difference
     finite_difference_eps: progressive
     isosurface:
@@ -46,21 +46,21 @@ model:
       threshold: 0.
     xyz_encoding_config:
       otype: ProgressiveBandHashGrid
-      n_levels: 32
+      n_levels: 16
       n_features_per_level: 2
       log2_hashmap_size: 19
-      base_resolution: 4
-      finest_resolution: 2048
+      base_resolution: 16
+      finest_resolution: 1024
       include_xyz: true
       start_level: 1
       start_step: 0
-      update_steps: 300
+      update_steps: 1000
     mlp_network_config:
       otype: VanillaMLP
       activation: ReLU
       output_activation: none
       n_neurons: 64
-      n_hidden_layers: 1
+      n_hidden_layers: 2
       sphere_init: true
       sphere_init_radius: 0.5
       weight_norm: true
@@ -75,10 +75,10 @@ model:
       activation: ReLU
       output_activation: none
       n_neurons: 64
-      n_hidden_layers: 3
+      n_hidden_layers: 2
     color_activation: sigmoid
   # background model configurations
-  num_samples_per_ray_bg: 64
+  num_samples_per_ray_bg: 256
   geometry_bg:
     name: volume-density
     radius: ${model.radius}
@@ -88,15 +88,15 @@ model:
     isosurface: null
     xyz_encoding_config:
       otype: ProgressiveBandHashGrid
-      n_levels: 16 # or 8
+      n_levels: 16
       n_features_per_level: 2
       log2_hashmap_size: 19
-      base_resolution: 4 # or 8
-      finest_resolution: 64
+      base_resolution: 16
+      per_level_scale: 1.3195079107728942
       include_xyz: true
       start_level: 1
       start_step: 0
-      update_steps: 600
+      update_steps: 1000
     mlp_network_config:
       otype: VanillaMLP
       activation: ReLU
@@ -114,18 +114,21 @@ model:
       activation: ReLU
       output_activation: none
       n_neurons: 64
-      n_hidden_layers: 3
+      n_hidden_layers: 2
     color_activation: sigmoid
 
 system:
   name: sparsecraft-system
+  resample_taylor_step: 500
+  sampling_taylor_sigma: 0.0001 # 0.0001
+  sampling_taylor_n: 5000
   loss:
     lambda_rgb_l1: 1.
     lambda_eikonal: 0.1
-    lambda_mvs_color: [0, 0.001, 0.5, 12000]
-    lambda_specular_color: [1500, 0.01, 0., 12000]
-    lambda_input_taylor: [0, 0.001, 1., 12000]
-    lambda_query_taylor: [0, 0.001, 1., 12000]
+    lambda_mvs_color: 0. #[0, 0.001, 0.1, 30000]
+    lambda_specular_color: [10000, 0.1, 0., 30000]
+    lambda_input_taylor: [0, 0.01, 1., 30000]
+    lambda_query_taylor: [0, 0.01, 1., 30000]
   optimizer:
     name: AdamW
     args:
@@ -143,16 +146,17 @@ system:
         lr: 0.01
       variance:
         lr: 0.001
-  constant_steps: 6000
+  constant_steps: 1000
   scheduler:
     name: SequentialLR
     interval: step
     milestones:
       - ${system.constant_steps}
     schedulers:
-      - name: ConstantLR
+      - name: LinearLR # linear warm-up in the first system.constant_steps steps
         args:
-          factor: 1.0
+          start_factor: 0.01
+          end_factor: 1.0
           total_iters: ${system.constant_steps}
       - name: ExponentialLR
         args:
@@ -168,10 +172,10 @@ export:
   export_vertex_color: False
 
 trainer:
-  max_steps: 12000
+  max_steps: 30000
   log_every_n_steps: 100
   num_sanity_val_steps: 0
-  # val_check_interval: 1000
+  val_check_interval: 5000
   limit_train_batches: 1.0
   limit_val_batches: 1
   # limit_test_batches: 1

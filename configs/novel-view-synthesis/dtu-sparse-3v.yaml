@@ -66,7 +66,7 @@ model:
       weight_norm: true
   texture:
     name: disentangled-volume-radiance
-    input_feature_dim: ${add:${model.geometry.feature_dim},3} # surface normal as additional input
+    input_feature_dim: ${add:${model.geometry.feature_dim},6} # surface normals, input position and viewing direction as additional input
     dir_encoding_config:
       otype: SphericalHarmonics
       degree: 4
@@ -88,7 +88,6 @@ model:
     isosurface: null
     xyz_encoding_config:
       otype: ProgressiveBandHashGrid
-      end_step: ${trainer.max_steps}
       n_levels: 16 # or 8
       n_features_per_level: 2
       log2_hashmap_size: 19
@@ -134,15 +133,11 @@ system:
       betas: [0.9, 0.99]
       eps: 1.e-15
     params:
-      geometry.network:
-        lr: 0.01
-      geometry.encoding:
+      geometry:
         lr: 0.01
       texture:
         lr: 0.01
-      geometry_bg.encoding_with_network.network:
-        lr: 0.01
-      geometry_bg.encoding_with_network.encoding:
+      geometry_bg:
         lr: 0.01
       texture_bg:
         lr: 0.01
