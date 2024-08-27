@@ -13,4 +13,4 @@ def make(name, config):
     return dataset
 
 
-from . import dtu_sparse
+from . import dtu_sparse, colmap

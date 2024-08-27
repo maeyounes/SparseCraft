@@ -11,7 +11,6 @@ import pytorch_lightning as pl
 import datasets
 from models.ray_utils import get_ray_directions
 from utils.misc import get_rank
-from scipy.spatial import cKDTree as KDTree
 from datasets.sparsecraft_utils import ply_to_point_cloud, load_K_Rt_from_P
 import cv2
 from torch_cluster import knn
