@@ -119,7 +119,7 @@ model:
 
 system:
   name: sparsecraft-system
-  resample_taylor_step: 500
+  sampling_taylor_step: 500
   sampling_taylor_sigma: 0.0001 # 0.0001
   sampling_taylor_n: 5000
   loss:

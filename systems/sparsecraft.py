@@ -35,11 +35,17 @@ class SparseCraftSystem(NeuSSystem):
         # NOTE: Taylor based Regurlarization with MVS points
         if self.C(self.config.system.loss.lambda_input_taylor) or self.C(self.config.system.loss.lambda_query_taylor):
             # Update the query points to match epsilon of numerical diff
-            if self.global_step % 500 == 0:
-                self.dataset.generate_taylor_samples(sigma=self.model.geometry._finite_difference_eps * 2.)
+            sampling_taylor_step = self.config.system.get('sampling_taylor_step', 500)
+            sampling_taylor_sigma = self.config.system.get('sampling_taylor_sigma', None)
+            sampling_taylor_n = self.config.system.get('sampling_taylor_n', 5000)
+            if self.global_step % sampling_taylor_step == 0:
+                if sampling_taylor_sigma is None:
+                    self.dataset.generate_taylor_samples(self.model.geometry._finite_difference_eps * 2.)
+                else:
+                    self.dataset.generate_taylor_samples(sigma=sampling_taylor_sigma)
             # Sample input and query points
-            if self.dataset.input_points.shape[0] > 5000:
-                points_samples_ids = np.random.choice(self.dataset.input_points.shape[0], 5000, replace=False)
+            if self.dataset.input_points.shape[0] > sampling_taylor_n:
+                points_samples_ids = np.random.choice(self.dataset.input_points.shape[0], sampling_taylor_n, replace=False)
                 batch_input_points = self.dataset.input_points[points_samples_ids]
                 batch_input_normals = self.dataset.input_normals[points_samples_ids]
                 batch_input_colors = self.dataset.input_colors[points_samples_ids]
@@ -67,8 +73,8 @@ class SparseCraftSystem(NeuSSystem):
                 # NOTE: Apply Taylor expansion of first order at the query points
                 # f(q) = f(p) + dfdp * (q - p) => f(q) = ||dfdq||² * n (q - p) <=> p = q - f(q) * ||dfdp||² * n 
                 # we omit the term ||dfdp||² as it enforced by the eikonal constraint to be 1
-                _, input_sdf_g, input_feature, input_encoding = self.model.geometry(
-                    batch_input_points, with_grad=True, with_feature=True, with_encoding=True
+                _, input_sdf_g, input_feature = self.model.geometry(
+                    batch_input_points, with_grad=True, with_feature=True
                 )
                 batch_moved_q = batch_query_points.detach() -  query_sdf.unsqueeze(-1) * batch_input_normals
                 query_taylor_loss = (torch.linalg.norm((batch_input_points - batch_moved_q), ord=2, dim=-1)).mean()
@@ -78,7 +84,7 @@ class SparseCraftSystem(NeuSSystem):
                 )
             if self.C(self.config.system.loss.lambda_mvs_color):
                 # NOTE: Apply mvs albedo color loss
-                input_mvs_albedo = self.model.texture.forward_albedo(input_encoding, input_feature)
+                input_mvs_albedo = self.model.texture.forward_albedo(input_feature)
                 loss_input_mvs_albedo_l1 = F.l1_loss(input_mvs_albedo, batch_input_colors)
                 loss += loss_input_mvs_albedo_l1 * self.C(
                     self.config.system.loss.lambda_mvs_color
